@@ -6,6 +6,21 @@ mod test_formats;
 
 include!("generated.rs");
 
+// FIXME(sproul): quite nasty
+// rename prefixed symbols from C if we're doing the whole symbol hacking thing
+#[cfg(feature = "minimal-spec")]
+use {
+    ckzgmin_blob_to_kzg_commitment as blob_to_kzg_commitment,
+    ckzgmin_compute_blob_kzg_proof as compute_blob_kzg_proof,
+    ckzgmin_compute_kzg_proof as compute_kzg_proof,
+    ckzgmin_free_trusted_setup as free_trusted_setup,
+    ckzgmin_load_trusted_setup as load_trusted_setup,
+    ckzgmin_load_trusted_setup_file as load_trusted_setup_file,
+    ckzgmin_verify_blob_kzg_proof as verify_blob_kzg_proof,
+    ckzgmin_verify_blob_kzg_proof_batch as verify_blob_kzg_proof_batch,
+    ckzgmin_verify_kzg_proof as verify_kzg_proof,
+};
+
 use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::path::PathBuf;

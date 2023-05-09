@@ -1,5 +1,7 @@
+use regex::bytes::Regex;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const MAINNET_FIELD_ELEMENTS_PER_BLOB: usize = 4096;
 const MINIMAL_FIELD_ELEMENTS_PER_BLOB: usize = 4;
@@ -151,14 +153,78 @@ fn main() {
     cc.flag(format!("-DFIELD_ELEMENTS_PER_BLOB={}", field_elements_per_blob).as_str());
     cc.file(c_src_dir.join("c_kzg_4844.c"));
 
-    cc.try_compile("ckzg").expect("Failed to compile ckzg");
+    let lib_name = if cfg!(feature = "minimal-spec") {
+        "ckzgmin"
+    } else {
+        "ckzg"
+    };
+
+    cc.try_compile(lib_name).expect("Failed to compile ckzg");
+
+    // FIXME(sproul): very linux-specific and very hacky
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let lib_path = out_dir.join(format!("lib{lib_name}.a"));
+    assert!(lib_path.is_file());
+
+    let lib_backup_path = lib_path.with_extension("bak.a");
+
+    // Backup original library.
+    std::fs::copy(&lib_path, &lib_backup_path).unwrap();
+
+    // Munge those symbols.
+    let symbol_renames_path = cargo_dir.join("symbol_renames.txt");
+    if cfg!(feature = "minimal-spec") {
+        println!("running objcopy");
+        assert!(symbol_renames_path.is_file());
+        let objcopy_status = Command::new("objcopy")
+            .args([
+                "--redefine-syms".to_string(),
+                symbol_renames_path.display().to_string(),
+            ])
+            // .arg("--discard-all")
+            .arg(lib_backup_path.display().to_string())
+            .arg(lib_path.display().to_string())
+            .status()
+            .unwrap();
+        assert!(objcopy_status.success());
+    }
 
     // Tell cargo to search for the static blst exposed by the blst-bindings' crate.
     println!("cargo:rustc-link-lib=static=blst");
 
     let bindings_out_path = cargo_dir.join("src").join("bindings").join("generated.rs");
     let header_file_path = c_src_dir.join("c_kzg_4844.h");
-    let header_file = header_file_path.to_str().expect("valid header file");
+
+    let mut header_file_contents = std::fs::read(&header_file_path).unwrap();
+
+    // Apply symbol replacements to header.
+    if cfg!(feature = "minimal-spec") {
+        let symbol_renames_contents = std::fs::read(&symbol_renames_path).unwrap();
+        let symbol_renames_str = std::str::from_utf8(&symbol_renames_contents).unwrap();
+        let symbol_rename_regex = symbol_renames_str
+            .lines()
+            .map(|line| {
+                let parts = line.split(" ").collect::<Vec<_>>();
+                assert_eq!(parts.len(), 2);
+                let orig = parts[0];
+                let new = parts[1];
+                let regex = Regex::new(&format!("\\b{orig}\\b")).unwrap();
+                (regex, new)
+            })
+            .collect::<Vec<_>>();
+
+        for (regex, replacement) in symbol_rename_regex {
+            let new_header_file_contents = regex
+                .replace(&header_file_contents, replacement.as_bytes())
+                .into_owned();
+            header_file_contents = new_header_file_contents;
+        }
+    }
+
+    let modified_header_path = out_dir.join("c_kzg_4844_mod.h");
+    std::fs::write(&modified_header_path, header_file_contents).unwrap();
+
+    let header_file = modified_header_path.to_str().expect("valid header file");
 
     make_bindings(
         field_elements_per_blob,
@@ -167,8 +233,8 @@ fn main() {
         bindings_out_path,
     );
 
-    // Finally, tell cargo this provides ckzg
-    println!("cargo:rustc-link-lib=ckzg");
+    // Finally, tell cargo this provides ckzg(min)
+    println!("cargo:rustc-link-lib={lib_name}");
 }
 
 fn make_bindings<P>(
@@ -214,7 +280,7 @@ fn make_bindings<P>(
         // Since this is not part of the header file, needs to be allowed explicitly.
         .allowlist_var("FIELD_ELEMENTS_PER_BLOB")
         // Get bindings only for the header file.
-        .allowlist_file(".*c_kzg_4844.h")
+        .allowlist_file(".*c_kzg_4844_.*.h")
         /*
          * Cleanup instructions.
          */
